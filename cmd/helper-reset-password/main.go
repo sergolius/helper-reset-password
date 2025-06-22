@@ -8,22 +8,25 @@ import (
 	"os"
 	"path"
 
-	helper_reset_password "github.com/portainer/helper-reset-password"
-	"github.com/portainer/helper-reset-password/password"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/crypto"
 	"github.com/portainer/portainer/api/database"
 	"github.com/portainer/portainer/api/datastore"
 	"github.com/portainer/portainer/api/filesystem"
+
+	helper_reset_password "github.com/portainer/helper-reset-password"
+	"github.com/portainer/helper-reset-password/password"
 )
 
-func parseCommandLineArguments() (string, string, error) {
+func parseCommandLineArguments() (string, string, string, error) {
 	var (
+		username     string
 		password     string
 		passwordHash string
 		err          error
 	)
 
+	flag.StringVar(&username, "username", "", "Username to reset password")
 	flag.StringVar(&password, "password", "", "The new admin password")
 	flag.StringVar(&passwordHash, "password-hash", "", "The new admin password hash")
 
@@ -33,15 +36,16 @@ func parseCommandLineArguments() (string, string, error) {
 		err = errors.New("You cannot use the 'password' and 'password-hash' arguments at the same time")
 	}
 
-	return password, passwordHash, err
+	return username, password, passwordHash, err
 }
 
 func main() {
 	// parse CLI arguments
-	cliPassword, cliPasswordHash, err := parseCommandLineArguments()
+	username, cliPassword, cliPasswordHash, err := parseCommandLineArguments()
 	if err != nil {
 		log.Fatalf("Invalid CLI usage! err: %s", err)
 	}
+
 	// try to locate the db file
 	if _, err := os.Stat(path.Join(helper_reset_password.DataStorePath, "portainer.db")); err != nil {
 		if os.IsNotExist(err) {
@@ -81,8 +85,18 @@ func main() {
 		log.Fatalf("Database from a Docker Desktop Portainer instance detected - exiting without resetting")
 	}
 
+	var user *portainer.User
+
+	if adminName != username && username != "" {
+		user, err = store.User().UserByUsername(username)
+		if err != nil {
+			log.Fatalf("Unable to retrieve user with username %s inside the database, err: %s", username, err)
+		}
+		goto password
+	}
+
 	// try to find user1
-	user, err := store.User().User(portainer.UserID(1))
+	user, err = store.User().User(portainer.UserID(1))
 	if err != nil {
 		// if user1 doesn't exist, will create later
 		log.Printf("[WARN] Unable to retrieve user with ID 1, will try to create, err: %s", err)
@@ -99,13 +113,13 @@ func main() {
 			}
 			adminName = fmt.Sprintf("admin-%s", adminName)
 		}
+	} else {
+		// If password is used for docker extension. It won't return an error if passwords are same.
+		if err := cryptoService.CompareHashAndData(user.Password, "K7yJPP5qNK4hf1QsRnfV"); err == nil {
+			log.Fatalf("Database from a Docker Desktop Portainer instance detected - exiting without resetting")
+		}
 	}
-
-	// If password is used for docker extension. It won't return an error if passwords are same.
-	if err := cryptoService.CompareHashAndData(user.Password, "K7yJPP5qNK4hf1QsRnfV"); err == nil {
-		log.Fatalf("Database from a Docker Desktop Portainer instance detected - exiting without resetting")
-	}
-
+password:
 	// generate the new password if not given via CLI
 	var newPassword string
 	if cliPassword == "" {
